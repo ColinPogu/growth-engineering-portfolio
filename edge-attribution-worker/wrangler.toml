@@ -1,0 +1,14 @@
+name = "edge-attribution-worker"
+main = "src/index.js"
+compatibility_date = "2026-09-01"
+
+# First-party click + order attribution store.
+[[kv_namespaces]]
+binding = "ATTRIBUTION"
+id = "REPLACE_WITH_YOUR_KV_NAMESPACE_ID"
+
+[vars]
+STORE_ORIGIN = "https://your-store.example.com"
+
+# Set the webhook secret out of band, never in this file:
+#   wrangler secret put SHOPIFY_WEBHOOK_SECRET

@@ -1,0 +1,130 @@
+{
+  "name": "Affiliate Ops Daily Digest",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            { "field": "cronExpression", "expression": "0 30 23 * * *" }
+          ]
+        }
+      },
+      "id": "schedule-trigger",
+      "name": "Every day 07:30 ET",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.1,
+      "position": [-320, 300]
+    },
+    {
+      "parameters": {
+        "url": "https://api.social-snowball.example/v1/programs/stats",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            { "name": "window", "value": "1d" },
+            { "name": "include", "value": "programs,payouts,top_partners" }
+          ]
+        },
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {}
+      },
+      "id": "pull-stats",
+      "name": "Pull program stats",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [-80, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Compute the numbers that actually drive decisions and flag payout risk.\nconst d = $json;\nconst revenue = Number(d.revenue || 0);\nconst spend = Number(d.commissions || 0) + Number(d.one_time_payments || 0);\nconst orders = Number(d.orders || 0);\nconst clicks = Number(d.unique_link_clicks || 0);\n\nconst roi = spend > 0 ? revenue / spend : 0;\nconst cpa = orders > 0 ? spend / orders : 0;\nconst aov = orders > 0 ? revenue / orders : 0;\nconst cvr = clicks > 0 ? (orders / clicks) * 100 : 0;\n\n// A payout is risky if it is flagged by the provider or spikes far above a partner's norm.\nconst risky = (d.ready_payouts || []).filter(\n  (p) => p.fraud_risk === true || Number(p.amount) > 3 * Number(p.trailing_avg || 0 || 1)\n);\n\nreturn [{\n  json: {\n    date: new Date().toISOString().slice(0, 10),\n    revenue: revenue.toFixed(2),\n    spend: spend.toFixed(2),\n    orders,\n    roi: roi.toFixed(2),\n    cpa: cpa.toFixed(2),\n    aov: aov.toFixed(2),\n    cvr: cvr.toFixed(2),\n    new_affiliates: Number(d.new_affiliates || 0),\n    top_partners: (d.top_partners || []).slice(0, 3),\n    risky_payouts: risky,\n    risky_count: risky.length\n  }\n}];"
+      },
+      "id": "compute",
+      "name": "Compute ROI, CPA, flags",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [160, 300]
+    },
+    {
+      "parameters": {
+        "authentication": "oAuth2",
+        "resource": "sheet",
+        "operation": "append",
+        "documentId": { "__rl": true, "mode": "list", "value": "REPLACE_WITH_SHEET_ID" },
+        "sheetName": { "__rl": true, "mode": "list", "value": "daily" },
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "value": {}
+        },
+        "options": {}
+      },
+      "id": "append-sheet",
+      "name": "Append daily snapshot",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.4,
+      "position": [420, 180]
+    },
+    {
+      "parameters": {
+        "select": "channel",
+        "channelId": { "__rl": true, "mode": "name", "value": "#affiliate-ops" },
+        "text": "=Affiliate ops, {{$json.date}}\nRevenue ${{$json.revenue}} on {{$json.orders}} orders | ROI {{$json.roi}}x | CPA ${{$json.cpa}} | AOV ${{$json.aov}} | CVR {{$json.cvr}}%\nNew partners: {{$json.new_affiliates}}\nTop 3: {{ $json.top_partners.map(p => p.name + ' $' + p.revenue).join(', ') }}",
+        "otherOptions": {}
+      },
+      "id": "slack-digest",
+      "name": "Post daily digest",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.2,
+      "position": [420, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "typeValidation": "strict" },
+          "conditions": [
+            {
+              "leftValue": "={{$json.risky_count}}",
+              "rightValue": 0,
+              "operator": { "type": "number", "operation": "gt" }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "if-risky",
+      "name": "Any risky payouts?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [420, 440]
+    },
+    {
+      "parameters": {
+        "select": "channel",
+        "channelId": { "__rl": true, "mode": "name", "value": "#affiliate-ops" },
+        "text": "=:warning: {{$json.risky_count}} payout(s) flagged for review before the next run. Holding them out of the batch.",
+        "otherOptions": {}
+      },
+      "id": "slack-alert",
+      "name": "Flag payouts for review",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.2,
+      "position": [680, 440]
+    }
+  ],
+  "connections": {
+    "Every day 07:30 ET": { "main": [[{ "node": "Pull program stats", "type": "main", "index": 0 }]] },
+    "Pull program stats": { "main": [[{ "node": "Compute ROI, CPA, flags", "type": "main", "index": 0 }]] },
+    "Compute ROI, CPA, flags": {
+      "main": [[
+        { "node": "Append daily snapshot", "type": "main", "index": 0 },
+        { "node": "Post daily digest", "type": "main", "index": 0 },
+        { "node": "Any risky payouts?", "type": "main", "index": 0 }
+      ]]
+    },
+    "Any risky payouts?": { "main": [[{ "node": "Flag payouts for review", "type": "main", "index": 0 }], []] }
+  },
+  "active": false,
+  "settings": { "executionOrder": "v1" },
+  "pinData": {}
+}
